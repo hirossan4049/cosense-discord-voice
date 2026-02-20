@@ -2,44 +2,43 @@ import {
   joinVoiceChannel,
   entersState,
   VoiceConnectionStatus,
-  EndBehaviorType
+  EndBehaviorType,
+  type VoiceConnection,
 } from '@discordjs/voice';
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import prism from 'prism-media';
+import type { GuildMember, GuildTextBasedChannel } from 'discord.js';
 import { WhisperClient } from './whisperClient.js';
 import { ScrapboxWriter } from './scrapboxWriter.js';
 
 export class VoiceHandler {
+  recording = false;
+  whisper: WhisperClient;
+  scrapbox: ScrapboxWriter;
+  recordingDir: string;
+  sessionStartTime: Date | null = null;
+  currentPageTitle: string | null = null;
+  voiceConnection: VoiceConnection | null = null;
+  userAudioFiles: Record<string, ChildProcess> = {};
+  textChannel: GuildTextBasedChannel | null = null;
+  pendingTranscriptions: Promise<void>[] = [];
+
   constructor() {
-    this.recording = false;
     this.whisper = new WhisperClient();
     this.scrapbox = new ScrapboxWriter();
     this.recordingDir = path.join(process.cwd(), 'recordings');
     this.ensureRecordingDir();
-
-    this.sessionStartTime = null;
-    this.currentPageTitle = null;
-    this.voiceConnection = null;
-    this.audioRecorder = null;
-    this.userAudioFiles = {}; // userID -> file stream map
-    this.textChannel = null; // ボイスチャネルのテキストチャンネル
-    this.pendingTranscriptions = []; // 処理中の文字起こし Promise
   }
 
-  ensureRecordingDir() {
+  ensureRecordingDir(): void {
     if (!fs.existsSync(this.recordingDir)) {
       fs.mkdirSync(this.recordingDir, { recursive: true });
     }
   }
 
-  /**
-   * メンバーが属するボイスチャネルに接続
-   * @param {discord.GuildMember} member - Discord メンバー
-   * @returns {Promise<VoiceConnection|null>}
-   */
-  async connectToVoiceChannel(member) {
+  async connectToVoiceChannel(member: GuildMember): Promise<VoiceConnection | null> {
     try {
       if (!member.voice?.channel) {
         throw new Error('メンバーはボイスチャネルに接続していません');
@@ -55,7 +54,6 @@ export class VoiceHandler {
         selfDeaf: false
       });
 
-      // 接続状態を待つ
       await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
       this.voiceConnection = connection;
       console.log(`✅ ボイスチャネル接続成功`);
@@ -66,40 +64,25 @@ export class VoiceHandler {
     }
   }
 
-  /**
-   * 音声記録を開始
-   * @param {VoiceConnection} connection
-   * @param {discord.TextChannel} textChannel - 議事録を投稿するテキストチャンネル
-   */
-  async startRecording(connection, textChannel) {
+  async startRecording(connection: VoiceConnection, textChannel: GuildTextBasedChannel): Promise<void> {
     this.recording = true;
     this.sessionStartTime = new Date();
     this.currentPageTitle = this.scrapbox.createMinutesPage();
     this.userAudioFiles = {};
-    this.textChannel = textChannel; // テキストチャンネルを保存
+    this.textChannel = textChannel;
 
-    // Scrapbox ページを初期化
     const header = `議事録\n開始時刻: ${this.sessionStartTime.toLocaleString('ja-JP')}\n\n`;
     await this.scrapbox.appendToPage(this.currentPageTitle, header);
 
     console.log(`🎙️ 録音開始: ${this.currentPageTitle}`);
 
-    // ffmpeg で音声をストリーム処理
     this._startFFmpegCapture(connection);
   }
 
-  /**
-   * ffmpeg でボイスチャネルの音声をキャプチャ
-   * @param {VoiceConnection} connection
-   */
-  _startFFmpegCapture(connection) {
-    // receiver で各ユーザーの音声ストリームを取得
-    // （discord.js v14 では connection.receiver が使用可能）
-
+  private _startFFmpegCapture(connection: VoiceConnection): void {
     if (connection.receiver) {
       console.log(`🔊 音声受信開始...`);
 
-      // 全ユーザーの音声イベントをリッスン
       connection.receiver.speaking.on('start', (userId) => {
         if (!this.userAudioFiles[userId]) {
           console.log(`🎤 ユーザー ${userId} を録音開始`);
@@ -111,18 +94,13 @@ export class VoiceHandler {
     }
   }
 
-  /**
-   * ユーザーの音声をファイルに記録
-   * @param {VoiceConnection} connection
-   * @param {string} userId
-   */
-  _recordUserAudio(connection, userId) {
+  private _recordUserAudio(connection: VoiceConnection, userId: string): void {
     if (this.userAudioFiles[userId]) {
-      return; // 既に記録中
+      return;
     }
 
     try {
-      const datePrefix = this.sessionStartTime.toISOString().split('T')[0];
+      const datePrefix = this.sessionStartTime!.toISOString().split('T')[0];
       const uniqueSuffix = Date.now();
       const audioFile = path.join(
         this.recordingDir,
@@ -131,7 +109,6 @@ export class VoiceHandler {
 
       console.log(`📝 ユーザー ${userId} の音声を記録: ${audioFile}`);
 
-      // receiver.subscribe() で Opus ストリームを取得（新API）
       const opusStream = connection.receiver.subscribe(userId, {
         end: {
           behavior: EndBehaviorType.AfterSilence,
@@ -139,7 +116,6 @@ export class VoiceHandler {
         }
       });
 
-      // Opus → PCM にデコード（チャンネル数を1に変更）
       const decoder = new prism.opus.Decoder({
         rate: 48000,
         channels: 2,
@@ -147,11 +123,10 @@ export class VoiceHandler {
       });
       const pcmStream = opusStream.pipe(decoder);
 
-      // ffmpeg で PCM → MP3 に変換
       const ffmpeg = spawn('ffmpeg', [
-        '-y', // 上書き確認を抑止
+        '-y',
         '-loglevel', 'error',
-        '-f', 's16le', // 入力フォーマット (PCM)
+        '-f', 's16le',
         '-ar', '48000',
         '-ac', '2',
         '-i', 'pipe:0',
@@ -161,18 +136,18 @@ export class VoiceHandler {
       ]);
 
       let ffmpegError = '';
-      ffmpeg.stderr.on('data', (data) => {
+      ffmpeg.stderr!.on('data', (data: Buffer) => {
         ffmpegError += data.toString();
       });
 
-      pcmStream.pipe(ffmpeg.stdin);
+      pcmStream.pipe(ffmpeg.stdin!);
 
-      const handleStreamError = (label) => (err) => {
+      const handleStreamError = (label: string) => (err: Error) => {
         console.error(`❌ ${label} エラー (${userId}):`, err.message);
       };
       opusStream.on('error', handleStreamError('Opus stream'));
       decoder.on('error', handleStreamError('PCM decode'));
-      ffmpeg.stdin.on('error', handleStreamError('ffmpeg stdin'));
+      ffmpeg.stdin!.on('error', handleStreamError('ffmpeg stdin'));
 
       ffmpeg.on('close', (code, signal) => {
         const exists = fs.existsSync(audioFile);
@@ -184,7 +159,6 @@ export class VoiceHandler {
         }
         delete this.userAudioFiles[userId];
 
-        // 発話終了ごとに即座に Whisper へ送信
         if (exists) {
           const p = this._transcribeAndPost(audioFile, userId);
           this.pendingTranscriptions.push(p);
@@ -201,35 +175,24 @@ export class VoiceHandler {
 
       this.userAudioFiles[userId] = ffmpeg;
     } catch (error) {
-      console.error(`❌ ユーザー ${userId} の記録エラー:`, error.message);
+      console.error(`❌ ユーザー ${userId} の記録エラー:`, error instanceof Error ? error.message : error);
     }
   }
 
-  /**
-   * 音声記録を停止
-   */
-  async stopRecording() {
+  async stopRecording(): Promise<void> {
     if (!this.recording) {
       return;
     }
 
     this.recording = false;
 
-    // 全ユーザーの記録を終了
-    const closeWaiters = [];
+    const closeWaiters: Promise<void>[] = [];
     for (const ffmpeg of Object.values(this.userAudioFiles)) {
-      if (!ffmpeg) {
-        continue;
-      }
+      if (!ffmpeg) continue;
+      if (ffmpeg.exitCode !== null || ffmpeg.signalCode !== null) continue;
 
-      // すでに終了している場合はスキップ
-      if (ffmpeg.exitCode !== null || ffmpeg.signalCode !== null) {
-        continue;
-      }
-
-      // close イベントを待ってから後続処理へ進む
       closeWaiters.push(
-        new Promise((resolve) => {
+        new Promise<void>((resolve) => {
           ffmpeg.once('close', () => resolve());
           ffmpeg.once('error', () => resolve());
         })
@@ -243,19 +206,16 @@ export class VoiceHandler {
       await Promise.all(closeWaiters);
     }
 
-    // ボイス接続を切断
     if (this.voiceConnection) {
       this.voiceConnection.destroy();
       console.log('🎤 ボイスチャネルから切断');
     }
 
-    // 処理中の文字起こしが完了するのを待つ
     if (this.pendingTranscriptions.length > 0) {
       console.log(`🔄 残りの文字起こし ${this.pendingTranscriptions.length} 件を待機中...`);
       await Promise.all(this.pendingTranscriptions);
     }
 
-    // Scrapbox URL をテキストチャンネルに投稿
     if (this.textChannel && this.currentPageTitle) {
       const pageUrl = this.scrapbox.getPageUrl(this.currentPageTitle);
       await this.textChannel.send(`📎 議事録: ${pageUrl}`);
@@ -264,14 +224,8 @@ export class VoiceHandler {
     console.log('✅ 全ファイルの処理完了');
   }
 
-  /**
-   * 発話ごとに Whisper で認識し Scrapbox / Discord に投稿
-   * @param {string} audioFile - 音声ファイルパス
-   * @param {string} userId - Discord ユーザー ID
-   */
-  async _transcribeAndPost(audioFile, userId) {
+  private async _transcribeAndPost(audioFile: string, userId: string): Promise<void> {
     try {
-      // ファイルサイズチェック（空ファイルをスキップ）
       const stats = fs.statSync(audioFile);
       if (stats.size === 0) {
         console.log(`⚠️ 空ファイルのためスキップ: ${path.basename(audioFile)}`);
@@ -282,31 +236,28 @@ export class VoiceHandler {
       const text = await this.whisper.transcribe(audioFile);
 
       if (text) {
-        // ギルドメンバーのニックネームを取得（なければユーザー名、それも無ければID）
         let userName = `User_${userId}`;
         try {
-          const member = await this.textChannel?.guild?.members.fetch(userId);
+          const guild = this.textChannel && 'guild' in this.textChannel ? this.textChannel.guild : null;
+          const member = await guild?.members.fetch(userId);
           if (member) {
             userName = member.displayName;
           }
-        } catch {}
+        } catch { /* ignore */ }
 
         const entry = this.scrapbox.formatMinutesEntry(userName, text);
-        await this.scrapbox.appendToPage(this.currentPageTitle, entry);
+        await this.scrapbox.appendToPage(this.currentPageTitle!, entry);
         console.log(`✅ ${userName}: ${text.substring(0, 50)}...`);
 
-        // テキストチャンネルにリアルタイム投稿
         if (this.textChannel) {
           await this.textChannel.send(`**${userName}:** ${text}`);
         }
       }
 
-      // ファイルを削除
       fs.unlinkSync(audioFile);
     } catch (error) {
-      console.error(`❌ リアルタイム文字起こしエラー (${userId}):`, error.message);
-      // エラーでもファイルは削除
-      try { fs.unlinkSync(audioFile); } catch {}
+      console.error(`❌ リアルタイム文字起こしエラー (${userId}):`, error instanceof Error ? error.message : error);
+      try { fs.unlinkSync(audioFile); } catch { /* ignore */ }
     }
   }
 }

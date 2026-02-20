@@ -1,7 +1,8 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Collection } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, type Message, type GuildTextBasedChannel } from 'discord.js';
+import type { VoiceConnection } from '@discordjs/voice';
 import { VoiceHandler } from './voiceHandler.js';
-import nacl from 'tweetnacl';
+import 'tweetnacl';
 
 // @discordjs/voice の暗号化に tweetnacl を使用
 console.log('✅ tweetnacl を初期化しました');
@@ -15,18 +16,17 @@ const client = new Client({
   ]
 });
 
-const voiceHandlers = new Collection(); // guild_id -> VoiceHandler
-const voiceConnections = new Collection(); // guild_id -> VoiceConnection
+const voiceHandlers = new Collection<string, VoiceHandler>();
+const voiceConnections = new Collection<string, VoiceConnection>();
 
-// ボット起動
 client.on('ready', () => {
-  const displayName = client.user.globalName ?? client.user.tag ?? client.user.username;
+  const user = client.user!;
+  const displayName = user.globalName ?? user.tag ?? user.username;
   console.log(`✅ ボット起動: ${displayName}`);
   console.log(`   接続中のギルド数: ${client.guilds.cache.size}`);
 });
 
-// メッセージ処理
-client.on('messageCreate', async (message) => {
+client.on('messageCreate', async (message: Message) => {
   console.log(`📨 メッセージ受信: ${message.author.username}: ${message.content}`);
 
   if (message.author.bot) {
@@ -37,19 +37,18 @@ client.on('messageCreate', async (message) => {
     console.log(`   → コマンド形式ではない、スキップ`);
     return;
   }
+  if (!message.guild) return;
 
   const args = message.content.slice(1).split(/\s+/);
-  const command = args.shift().toLowerCase();
+  const command = args.shift()!.toLowerCase();
   console.log(`🔧 コマンド実行: ${command}, 引数: ${JSON.stringify(args)}`);
 
-  // ギルドごとに VoiceHandler を管理
   const guildId = message.guild.id;
   if (!voiceHandlers.has(guildId)) {
     voiceHandlers.set(guildId, new VoiceHandler());
   }
-  const handler = voiceHandlers.get(guildId);
+  const handler = voiceHandlers.get(guildId)!;
 
-  // コマンド処理
   switch (command) {
     case 'join':
       await handleJoin(message, handler);
@@ -69,20 +68,16 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-/**
- * !join コマンド
- */
-async function handleJoin(message, handler) {
+async function handleJoin(message: Message, handler: VoiceHandler): Promise<void> {
   try {
     const member = message.member;
-    const guildId = message.guild.id;
+    const guildId = message.guild!.id;
 
-    if (!member.voice?.channel) {
+    if (!member?.voice?.channel) {
       await message.reply('❌ あなたはボイスチャネルに接続していません');
       return;
     }
 
-    // 既に接続している場合
     if (voiceConnections.has(guildId)) {
       await message.reply('⚠️ 既にボイスチャネルに接続しています');
       return;
@@ -98,21 +93,18 @@ async function handleJoin(message, handler) {
     }
 
     voiceConnections.set(guildId, connection);
-    await handler.startRecording(connection, message.channel);
+    await handler.startRecording(connection, message.channel as GuildTextBasedChannel);
 
     await message.reply(
       `✅ ${member.voice.channel.name} に接続しました\n🎙️ 議事録の記録を開始します`
     );
   } catch (error) {
     console.error('❌ join エラー:', error);
-    await message.reply(`❌ エラーが発生しました: ${error.message}`);
+    await message.reply(`❌ エラーが発生しました: ${error instanceof Error ? error.message : error}`);
   }
 }
 
-/**
- * !leave コマンド
- */
-async function handleLeave(message, handler, guildId) {
+async function handleLeave(message: Message, handler: VoiceHandler, guildId: string): Promise<void> {
   try {
     if (!voiceConnections.has(guildId)) {
       await message.reply('❌ ボイスチャネルに接続していません');
@@ -132,21 +124,18 @@ async function handleLeave(message, handler, guildId) {
     }
   } catch (error) {
     console.error('❌ leave エラー:', error);
-    await message.reply(`❌ エラーが発生しました: ${error.message}`);
+    await message.reply(`❌ エラーが発生しました: ${error instanceof Error ? error.message : error}`);
   }
 }
 
-/**
- * !record start/stop コマンド
- */
-async function handleRecord(message, handler, args, guildId) {
+async function handleRecord(message: Message, handler: VoiceHandler, args: string[], guildId: string): Promise<void> {
   try {
     const action = args[0]?.toLowerCase();
 
     if (action === 'start') {
       const member = message.member;
 
-      if (!member.voice?.channel) {
+      if (!member?.voice?.channel) {
         await message.reply('❌ あなたはボイスチャネルに接続していません');
         return;
       }
@@ -166,7 +155,7 @@ async function handleRecord(message, handler, args, guildId) {
       }
 
       voiceConnections.set(guildId, connection);
-      await handler.startRecording(connection, message.channel);
+      await handler.startRecording(connection, message.channel as GuildTextBasedChannel);
       await message.reply('🎙️ 議事録の記録を開始しました');
     } else if (action === 'stop') {
       if (!voiceConnections.has(guildId)) {
@@ -188,21 +177,17 @@ async function handleRecord(message, handler, args, guildId) {
     }
   } catch (error) {
     console.error('❌ record エラー:', error);
-    await message.reply(`❌ エラーが発生しました: ${error.message}`);
+    await message.reply(`❌ エラーが発生しました: ${error instanceof Error ? error.message : error}`);
   }
 }
 
-/**
- * !status コマンド
- */
-async function handleStatus(message, handler) {
+async function handleStatus(message: Message, handler: VoiceHandler): Promise<void> {
   try {
-    const guildId = message.guild.id;
-    let statusText = '';
+    const guildId = message.guild!.id;
+    let statusText: string;
 
     if (voiceConnections.has(guildId) && handler.recording) {
-      const connection = voiceConnections.get(guildId);
-      const duration = (Date.now() - handler.sessionStartTime) / 1000;
+      const duration = (Date.now() - handler.sessionStartTime!.getTime()) / 1000;
       const minutes = Math.floor(duration / 60);
       const seconds = Math.floor(duration % 60);
 
@@ -214,14 +199,11 @@ async function handleStatus(message, handler) {
     await message.reply(statusText);
   } catch (error) {
     console.error('❌ status エラー:', error);
-    await message.reply(`❌ エラーが発生しました: ${error.message}`);
+    await message.reply(`❌ エラーが発生しました: ${error instanceof Error ? error.message : error}`);
   }
 }
 
-/**
- * !help コマンド
- */
-async function handleHelp(message) {
+async function handleHelp(message: Message): Promise<void> {
   const helpText = `
 📖 Discord 議事録ボット コマンド一覧
 
@@ -242,7 +224,6 @@ async function handleHelp(message) {
   await message.reply(helpText);
 }
 
-// ボット起動
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
   console.error('❌ DISCORD_TOKEN が .env に設定されていません');

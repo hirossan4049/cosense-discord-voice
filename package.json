@@ -1,14 +1,18 @@
 {
-  "name": "discord-minutes-bot",
+  "name": "giziroku-discord-bot",
   "version": "0.1.0",
   "description": "Discord voice chat to Scrapbox minutes bot with Whisper",
   "type": "module",
-  "main": "bot.js",
+  "main": "dist/bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "dev": "node --watch bot.js"
+    "dev": "tsx src/bot.ts",
+    "build": "tsc",
+    "start": "node dist/bot.js",
+    "lint": "oxlint src/",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@cosense/std": "npm:@jsr/cosense__std@^0.30.0",
     "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.19.0",
     "@snazzah/davey": "^0.1.9",
@@ -17,7 +21,13 @@
     "dotenv": "^16.3.1",
     "ffmpeg-static": "^5.2.0",
     "form-data": "^4.0.5",
-    "sodium": "^3.0.2",
+    "prism-media": "^1.3.5",
     "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "oxlint": "^0.16.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
   }
 }
