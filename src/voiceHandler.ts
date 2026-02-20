@@ -113,7 +113,7 @@ export class VoiceHandler {
       const opusStream = connection.receiver.subscribe(userId, {
         end: {
           behavior: EndBehaviorType.AfterSilence,
-          duration: 1200
+          duration: 300,
         }
       });
 
@@ -143,8 +143,14 @@ export class VoiceHandler {
 
       pcmStream.pipe(ffmpeg.stdin!);
 
+      const cleanup = () => {
+        if (!opusStream.destroyed) opusStream.destroy();
+        if (!decoder.destroyed) decoder.destroy();
+        if (!ffmpeg.killed) ffmpeg.kill();
+      };
       const handleStreamError = (label: string) => (err: Error) => {
         console.error(`❌ ${label} エラー (${userId}):`, err.message);
+        cleanup();
       };
       opusStream.on('error', handleStreamError('Opus stream'));
       decoder.on('error', handleStreamError('PCM decode'));
