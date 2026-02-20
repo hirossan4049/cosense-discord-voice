@@ -2,15 +2,27 @@ import axios from 'axios';
 
 export class Summarizer {
   private apiKey: string;
-  private endpoint = 'https://api.ai.sakura.ad.jp/v1/chat/completions';
-  private model = 'gpt-oss-120b';
+  private endpoint: string;
+  private model: string;
 
   constructor() {
-    const apiKey = process.env.SAKURA_API_KEY;
+    const apiKey = process.env.LLM_API_KEY;
     if (!apiKey) {
-      throw new Error('SAKURA_API_KEY が .env に設定されていません');
+      throw new Error('LLM_API_KEY が .env に設定されていません');
     }
     this.apiKey = apiKey;
+
+    const endpoint = process.env.LLM_API_ENDPOINT;
+    if (!endpoint) {
+      throw new Error('LLM_API_ENDPOINT が .env に設定されていません');
+    }
+    this.endpoint = endpoint;
+
+    const model = process.env.LLM_MODEL;
+    if (!model) {
+      throw new Error('LLM_MODEL が .env に設定されていません');
+    }
+    this.model = model;
   }
 
   async summarize(transcript: string): Promise<string> {

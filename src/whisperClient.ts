@@ -9,13 +9,23 @@ export class WhisperClient {
   private model: string;
 
   constructor() {
-    const apiKey = process.env.SAKURA_API_KEY;
+    const apiKey = process.env.STT_API_KEY;
     if (!apiKey) {
-      throw new Error('SAKURA_API_KEY が .env に設定されていません');
+      throw new Error('STT_API_KEY が .env に設定されていません');
     }
     this.apiKey = apiKey;
-    this.endpoint = 'https://api.ai.sakura.ad.jp/v1/audio/transcriptions';
-    this.model = 'whisper-large-v3-turbo';
+
+    const endpoint = process.env.STT_API_ENDPOINT;
+    if (!endpoint) {
+      throw new Error('STT_API_ENDPOINT が .env に設定されていません');
+    }
+    this.endpoint = endpoint;
+
+    const model = process.env.STT_MODEL;
+    if (!model) {
+      throw new Error('STT_MODEL が .env に設定されていません');
+    }
+    this.model = model;
   }
 
   async transcribe(audioFilePath: string, language = 'ja'): Promise<string> {
