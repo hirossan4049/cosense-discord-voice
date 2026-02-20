@@ -51,7 +51,8 @@ export class VoiceHandler {
         channelId: channel.id,
         guildId: channel.guild.id,
         adapterCreator: channel.guild.voiceAdapterCreator,
-        selfDeaf: false
+        selfDeaf: false,
+        daveEncryption: false,
       });
 
       await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
