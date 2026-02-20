@@ -25,6 +25,7 @@ export class VoiceHandler {
     this.audioRecorder = null;
     this.userAudioFiles = {}; // userID -> file stream map
     this.textChannel = null; // ボイスチャネルのテキストチャンネル
+    this.pendingTranscriptions = []; // 処理中の文字起こし Promise
   }
 
   ensureRecordingDir() {
@@ -182,6 +183,16 @@ export class VoiceHandler {
           console.error(`ffmpeg stderr: ${ffmpegError.trim()}`);
         }
         delete this.userAudioFiles[userId];
+
+        // 発話終了ごとに即座に Whisper へ送信
+        if (exists) {
+          const p = this._transcribeAndPost(audioFile, userId);
+          this.pendingTranscriptions.push(p);
+          p.finally(() => {
+            const idx = this.pendingTranscriptions.indexOf(p);
+            if (idx !== -1) this.pendingTranscriptions.splice(idx, 1);
+          });
+        }
       });
 
       opusStream.on('end', () => {
@@ -238,85 +249,64 @@ export class VoiceHandler {
       console.log('🎤 ボイスチャネルから切断');
     }
 
-    // 音声認識を実行
-    await this._processRecordings();
+    // 処理中の文字起こしが完了するのを待つ
+    if (this.pendingTranscriptions.length > 0) {
+      console.log(`🔄 残りの文字起こし ${this.pendingTranscriptions.length} 件を待機中...`);
+      await Promise.all(this.pendingTranscriptions);
+    }
+
+    // Scrapbox URL をテキストチャンネルに投稿
+    if (this.textChannel && this.currentPageTitle) {
+      const pageUrl = this.scrapbox.getPageUrl(this.currentPageTitle);
+      await this.textChannel.send(`📎 議事録: ${pageUrl}`);
+    }
+
+    console.log('✅ 全ファイルの処理完了');
   }
 
   /**
-   * 録音ファイルを処理・Whisper で認識
+   * 発話ごとに Whisper で認識し Scrapbox / Discord に投稿
+   * @param {string} audioFile - 音声ファイルパス
+   * @param {string} userId - Discord ユーザー ID
    */
-  async _processRecordings() {
+  async _transcribeAndPost(audioFile, userId) {
     try {
-      console.log('🔄 音声認識を開始...');
-
-      const files = fs.readdirSync(this.recordingDir);
-      const datePrefix = this.sessionStartTime.toISOString().split('T')[0];
-      const recordingPattern = new RegExp(
-        `voice_${datePrefix}_\\d+_\\d+\\.mp3`
-      );
-      const userFiles = files.filter((f) => recordingPattern.test(f));
-
-      if (userFiles.length === 0) {
-        console.log('⚠️ 音声ファイルがありません');
+      // ファイルサイズチェック（空ファイルをスキップ）
+      const stats = fs.statSync(audioFile);
+      if (stats.size === 0) {
+        console.log(`⚠️ 空ファイルのためスキップ: ${path.basename(audioFile)}`);
+        fs.unlinkSync(audioFile);
         return;
       }
 
-      // テキストチャンネルに投稿するメッセージを構築
-      let channelMessage = `📝 **議事録** - ${this.sessionStartTime.toLocaleTimeString('ja-JP', { hour12: false })}\n\n`;
-      let hasContent = false;
+      const text = await this.whisper.transcribe(audioFile);
 
-      // ユーザーごとに認識
-      for (const fileName of userFiles) {
-        const filePath = path.join(this.recordingDir, fileName);
-        const userId = fileName.match(/_(\d+)\\.mp3$/)?.[1] ?? 'unknown'; // ファイル名から userID 抽出
-
+      if (text) {
+        // ギルドメンバーのニックネームを取得（なければユーザー名、それも無ければID）
+        let userName = `User_${userId}`;
         try {
-          // ファイルの存在チェック
-          if (!fs.existsSync(filePath)) {
-            console.log(`⚠️ ファイルが存在しないためスキップ: ${fileName}`);
-            continue;
+          const member = await this.textChannel?.guild?.members.fetch(userId);
+          if (member) {
+            userName = member.displayName;
           }
+        } catch {}
 
-          // ファイルサイズチェック（空ファイルをスキップ）
-          const stats = fs.statSync(filePath);
-          if (stats.size === 0) {
-            console.log(`⚠️ 空ファイルのためスキップ: ${fileName}`);
-            fs.unlinkSync(filePath);
-            continue;
-          }
+        const entry = this.scrapbox.formatMinutesEntry(userName, text);
+        await this.scrapbox.appendToPage(this.currentPageTitle, entry);
+        console.log(`✅ ${userName}: ${text.substring(0, 50)}...`);
 
-          const text = await this.whisper.transcribe(filePath);
-
-          if (text) {
-            // Scrapbox に書き込む
-            const userName = `User_${userId}`;
-            const entry = this.scrapbox.formatMinutesEntry(userName, text);
-            await this.scrapbox.appendToPage(this.currentPageTitle, entry);
-            console.log(`✅ ${userName}: ${text.substring(0, 50)}...`);
-
-            // チャンネルメッセージに追加
-            channelMessage += `**${userName}:** ${text}\n`;
-            hasContent = true;
-          }
-
-          // ファイルを削除
-          fs.unlinkSync(filePath);
-        } catch (error) {
-          console.error(`❌ ファイル処理エラー (${fileName}):`, error.message);
+        // テキストチャンネルにリアルタイム投稿
+        if (this.textChannel) {
+          await this.textChannel.send(`**${userName}:** ${text}`);
         }
       }
 
-      // テキストチャンネルに投稿
-      if (this.textChannel && hasContent) {
-        const pageUrl = this.scrapbox.getPageUrl(this.currentPageTitle);
-        channelMessage += `\n📎 [Scrapbox で確認](${pageUrl})`;
-        await this.textChannel.send(channelMessage);
-        console.log(`✅ チャンネルに投稿しました`);
-      }
-
-      console.log('✅ 全ファイルの処理完了');
+      // ファイルを削除
+      fs.unlinkSync(audioFile);
     } catch (error) {
-      console.error('❌ 処理エラー:', error.message);
+      console.error(`❌ リアルタイム文字起こしエラー (${userId}):`, error.message);
+      // エラーでもファイルは削除
+      try { fs.unlinkSync(audioFile); } catch {}
     }
   }
 }
