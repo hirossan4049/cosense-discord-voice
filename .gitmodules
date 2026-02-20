@@ -1,0 +1,3 @@
+[submodule "cosense-mcp-server"]
+	path = cosense-mcp-server
+	url = https://github.com/hirossan4049/cosense-mcp-server.git

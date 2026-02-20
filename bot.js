@@ -1,0 +1,252 @@
+import 'dotenv/config';
+import { Client, GatewayIntentBits, Collection } from 'discord.js';
+import { VoiceHandler } from './voiceHandler.js';
+import nacl from 'tweetnacl';
+
+// @discordjs/voice の暗号化に tweetnacl を使用
+console.log('✅ tweetnacl を初期化しました');
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.MessageContent
+  ]
+});
+
+const voiceHandlers = new Collection(); // guild_id -> VoiceHandler
+const voiceConnections = new Collection(); // guild_id -> VoiceConnection
+
+// ボット起動
+client.on('ready', () => {
+  const displayName = client.user.globalName ?? client.user.tag ?? client.user.username;
+  console.log(`✅ ボット起動: ${displayName}`);
+  console.log(`   接続中のギルド数: ${client.guilds.cache.size}`);
+});
+
+// メッセージ処理
+client.on('messageCreate', async (message) => {
+  console.log(`📨 メッセージ受信: ${message.author.username}: ${message.content}`);
+
+  if (message.author.bot) {
+    console.log(`   → bot のメッセージ、スキップ`);
+    return;
+  }
+  if (!message.content.startsWith('!')) {
+    console.log(`   → コマンド形式ではない、スキップ`);
+    return;
+  }
+
+  const args = message.content.slice(1).split(/\s+/);
+  const command = args.shift().toLowerCase();
+  console.log(`🔧 コマンド実行: ${command}, 引数: ${JSON.stringify(args)}`);
+
+  // ギルドごとに VoiceHandler を管理
+  const guildId = message.guild.id;
+  if (!voiceHandlers.has(guildId)) {
+    voiceHandlers.set(guildId, new VoiceHandler());
+  }
+  const handler = voiceHandlers.get(guildId);
+
+  // コマンド処理
+  switch (command) {
+    case 'join':
+      await handleJoin(message, handler);
+      break;
+    case 'leave':
+      await handleLeave(message, handler, guildId);
+      break;
+    case 'record':
+      await handleRecord(message, handler, args, guildId);
+      break;
+    case 'status':
+      await handleStatus(message, handler);
+      break;
+    case 'help':
+      await handleHelp(message);
+      break;
+  }
+});
+
+/**
+ * !join コマンド
+ */
+async function handleJoin(message, handler) {
+  try {
+    const member = message.member;
+    const guildId = message.guild.id;
+
+    if (!member.voice?.channel) {
+      await message.reply('❌ あなたはボイスチャネルに接続していません');
+      return;
+    }
+
+    // 既に接続している場合
+    if (voiceConnections.has(guildId)) {
+      await message.reply('⚠️ 既にボイスチャネルに接続しています');
+      return;
+    }
+
+    console.log(`🔄 join コマンド実行: ${member.user.username} -> ${member.voice.channel.name}`);
+
+    const connection = await handler.connectToVoiceChannel(member);
+    if (!connection) {
+      console.error(`❌ connectToVoiceChannel が null を返しました`);
+      await message.reply('❌ ボイスチャネルへの接続に失敗しました');
+      return;
+    }
+
+    voiceConnections.set(guildId, connection);
+    await handler.startRecording(connection, message.channel);
+
+    await message.reply(
+      `✅ ${member.voice.channel.name} に接続しました\n🎙️ 議事録の記録を開始します`
+    );
+  } catch (error) {
+    console.error('❌ join エラー:', error);
+    await message.reply(`❌ エラーが発生しました: ${error.message}`);
+  }
+}
+
+/**
+ * !leave コマンド
+ */
+async function handleLeave(message, handler, guildId) {
+  try {
+    if (!voiceConnections.has(guildId)) {
+      await message.reply('❌ ボイスチャネルに接続していません');
+      return;
+    }
+
+    await handler.stopRecording();
+    voiceConnections.delete(guildId);
+
+    await message.reply(
+      `✅ ボイスチャネルから切断しました\n📄 議事録が Scrapbox に保存されました`
+    );
+
+    if (handler.currentPageTitle) {
+      const pageUrl = handler.scrapbox.getPageUrl(handler.currentPageTitle);
+      await message.reply(`📎 ${pageUrl}`);
+    }
+  } catch (error) {
+    console.error('❌ leave エラー:', error);
+    await message.reply(`❌ エラーが発生しました: ${error.message}`);
+  }
+}
+
+/**
+ * !record start/stop コマンド
+ */
+async function handleRecord(message, handler, args, guildId) {
+  try {
+    const action = args[0]?.toLowerCase();
+
+    if (action === 'start') {
+      const member = message.member;
+
+      if (!member.voice?.channel) {
+        await message.reply('❌ あなたはボイスチャネルに接続していません');
+        return;
+      }
+
+      if (voiceConnections.has(guildId)) {
+        await message.reply('⚠️ 既に記録中です。先に `!record stop` で停止してください');
+        return;
+      }
+
+      console.log(`🔄 record start コマンド実行: ${member.user.username}`);
+
+      const connection = await handler.connectToVoiceChannel(member);
+      if (!connection) {
+        console.error(`❌ connectToVoiceChannel が null を返しました`);
+        await message.reply('❌ ボイスチャネルへの接続に失敗しました\n詳細はコンソールを確認してください');
+        return;
+      }
+
+      voiceConnections.set(guildId, connection);
+      await handler.startRecording(connection, message.channel);
+      await message.reply('🎙️ 議事録の記録を開始しました');
+    } else if (action === 'stop') {
+      if (!voiceConnections.has(guildId)) {
+        await message.reply('❌ 現在記録中ではありません');
+        return;
+      }
+
+      await handler.stopRecording();
+      voiceConnections.delete(guildId);
+
+      await message.reply('✅ 記録を停止しました\n📄 議事録が Scrapbox に保存されました');
+
+      if (handler.currentPageTitle) {
+        const pageUrl = handler.scrapbox.getPageUrl(handler.currentPageTitle);
+        await message.reply(`📎 ${pageUrl}`);
+      }
+    } else {
+      await message.reply('❌ コマンド形式: `!record start` または `!record stop`');
+    }
+  } catch (error) {
+    console.error('❌ record エラー:', error);
+    await message.reply(`❌ エラーが発生しました: ${error.message}`);
+  }
+}
+
+/**
+ * !status コマンド
+ */
+async function handleStatus(message, handler) {
+  try {
+    const guildId = message.guild.id;
+    let statusText = '';
+
+    if (voiceConnections.has(guildId) && handler.recording) {
+      const connection = voiceConnections.get(guildId);
+      const duration = (Date.now() - handler.sessionStartTime) / 1000;
+      const minutes = Math.floor(duration / 60);
+      const seconds = Math.floor(duration % 60);
+
+      statusText = `🎙️ 記録中\n記録時間: ${minutes}分 ${seconds}秒`;
+    } else {
+      statusText = '⏹️ 記録停止中';
+    }
+
+    await message.reply(statusText);
+  } catch (error) {
+    console.error('❌ status エラー:', error);
+    await message.reply(`❌ エラーが発生しました: ${error.message}`);
+  }
+}
+
+/**
+ * !help コマンド
+ */
+async function handleHelp(message) {
+  const helpText = `
+📖 Discord 議事録ボット コマンド一覧
+
+\`!join\` - ボイスチャネルに接続（記録開始）
+\`!leave\` - ボイスチャネルから切断（記録停止）
+\`!record start\` - 記録を開始
+\`!record stop\` - 記録を停止
+\`!status\` - 現在の記録状態を表示
+\`!help\` - このメッセージを表示
+
+📝 使用方法：
+1. ボイスチャネルに参加
+2. \`!join\` で接続
+3. 会議・ミーティングを実施
+4. \`!leave\` で終了 → 議事録が自動保存
+  `;
+
+  await message.reply(helpText);
+}
+
+// ボット起動
+const token = process.env.DISCORD_TOKEN;
+if (!token) {
+  console.error('❌ DISCORD_TOKEN が .env に設定されていません');
+  process.exit(1);
+}
+
+client.login(token);
