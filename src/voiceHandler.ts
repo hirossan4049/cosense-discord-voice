@@ -77,7 +77,7 @@ export class VoiceHandler {
     this.textChannel = textChannel;
     this.sessionTranscript = [];
 
-    const header = `議事録\n開始時刻: ${this.sessionStartTime.toLocaleString('ja-JP')}\n\n`;
+    const header = `[** 議事録]\n開始時刻: ${this.sessionStartTime.toLocaleString('ja-JP')}\n`;
     await this.scrapbox.appendToPage(this.currentPageTitle, header);
 
     console.log(`🎙️ 録音開始: ${this.currentPageTitle}`);
@@ -243,7 +243,8 @@ export class VoiceHandler {
           await this.textChannel.send(`📋 **要約:**\n${summary}`);
         }
         if (summary && this.currentPageTitle) {
-          await this.scrapbox.appendToPage(this.currentPageTitle, `\n要約\n${summary}`);
+          const summaryLines = summary.split('\n').map((line: string) => ` ${line}`).join('\n');
+          await this.scrapbox.appendToPage(this.currentPageTitle, `\n[* 要約]\n${summaryLines}`);
         }
       } catch (error) {
         console.error('❌ 要約処理エラー:', error instanceof Error ? error.message : error);

@@ -41,7 +41,7 @@ export class ScrapboxWriter {
 
   formatMinutesEntry(userName: string, text: string, timestamp = new Date()): string {
     const timeStr = timestamp.toLocaleTimeString('ja-JP', { hour12: false });
-    return `[${timeStr}] **${userName}**: ${text}`;
+    return `[${timeStr}] [[${userName}]]: ${text}`;
   }
 
   getPageUrl(pageTitle: string): string {
