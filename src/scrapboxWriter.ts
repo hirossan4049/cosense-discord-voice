@@ -9,6 +9,10 @@ export class ScrapboxWriter {
     this.cosenseProjectName = process.env.COSENSE_PROJECT_NAME || 'localhouse';
   }
 
+  setProjectName(name: string): void {
+    this.cosenseProjectName = name;
+  }
+
   async appendToPage(pageTitle: string, content: string): Promise<boolean> {
     try {
       const result = await patch(

@@ -18,7 +18,12 @@ console.log('✅ tweetnacl を初期化しました');
 const commands = [
   new SlashCommandBuilder()
     .setName('join')
-    .setDescription('ボイスチャネルに接続して議事録の記録を開始します'),
+    .setDescription('ボイスチャネルに接続して議事録の記録を開始します')
+    .addStringOption(option =>
+      option.setName('project')
+        .setDescription('Cosenseプロジェクト名（省略時は.envの設定を使用）')
+        .setRequired(false)
+    ),
   new SlashCommandBuilder()
     .setName('leave')
     .setDescription('ボイスチャネルから切断して議事録の記録を停止します'),
@@ -104,6 +109,12 @@ async function handleJoin(interaction: ChatInputCommandInteraction, handler: Voi
     }
 
     await interaction.deferReply();
+
+    const projectName = interaction.options.getString('project');
+    if (projectName) {
+      handler.scrapbox.setProjectName(projectName);
+    }
+
     console.log(`🔄 join コマンド実行: ${member.user.username} -> ${member.voice.channel.name}`);
 
     const connection = await handler.connectToVoiceChannel(member);
@@ -116,8 +127,9 @@ async function handleJoin(interaction: ChatInputCommandInteraction, handler: Voi
     voiceConnections.set(guildId, connection);
     await handler.startRecording(connection, interaction.channel as GuildTextBasedChannel);
 
+    const projectInfo = projectName ? ` (プロジェクト: ${projectName})` : '';
     await interaction.editReply(
-      `✅ ${member.voice.channel.name} に接続しました\n🎙️ 議事録の記録を開始します`
+      `✅ ${member.voice.channel.name} に接続しました\n🎙️ 議事録の記録を開始します${projectInfo}`
     );
   } catch (error) {
     console.error('❌ join エラー:', error);
