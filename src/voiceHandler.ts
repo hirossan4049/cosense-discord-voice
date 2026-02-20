@@ -12,11 +12,13 @@ import prism from 'prism-media';
 import type { GuildMember, GuildTextBasedChannel } from 'discord.js';
 import { WhisperClient } from './whisperClient.js';
 import { ScrapboxWriter } from './scrapboxWriter.js';
+import { Summarizer } from './summarizer.js';
 
 export class VoiceHandler {
   recording = false;
   whisper: WhisperClient;
   scrapbox: ScrapboxWriter;
+  summarizer: Summarizer;
   recordingDir: string;
   sessionStartTime: Date | null = null;
   currentPageTitle: string | null = null;
@@ -24,10 +26,12 @@ export class VoiceHandler {
   userAudioFiles: Record<string, ChildProcess> = {};
   textChannel: GuildTextBasedChannel | null = null;
   pendingTranscriptions: Promise<void>[] = [];
+  sessionTranscript: string[] = [];
 
   constructor() {
     this.whisper = new WhisperClient();
     this.scrapbox = new ScrapboxWriter();
+    this.summarizer = new Summarizer();
     this.recordingDir = path.join(process.cwd(), 'recordings');
     this.ensureRecordingDir();
   }
@@ -71,6 +75,7 @@ export class VoiceHandler {
     this.currentPageTitle = this.scrapbox.createMinutesPage();
     this.userAudioFiles = {};
     this.textChannel = textChannel;
+    this.sessionTranscript = [];
 
     const header = `議事録\n開始時刻: ${this.sessionStartTime.toLocaleString('ja-JP')}\n\n`;
     await this.scrapbox.appendToPage(this.currentPageTitle, header);
@@ -188,10 +193,12 @@ export class VoiceHandler {
 
   async stopRecording(): Promise<void> {
     if (!this.recording) {
+      console.log('⚠️ stopRecording: recording=false のためスキップ');
       return;
     }
 
     this.recording = false;
+    console.log('🔄 stopRecording: 開始');
 
     const closeWaiters: Promise<void>[] = [];
     for (const ffmpeg of Object.values(this.userAudioFiles)) {
@@ -209,9 +216,11 @@ export class VoiceHandler {
         ffmpeg.kill();
       }
     }
+    console.log(`🔄 stopRecording: ffmpeg ${closeWaiters.length} 件待機中...`);
     if (closeWaiters.length) {
       await Promise.all(closeWaiters);
     }
+    console.log('🔄 stopRecording: ffmpeg 停止完了');
 
     if (this.voiceConnection) {
       this.voiceConnection.destroy();
@@ -221,6 +230,24 @@ export class VoiceHandler {
     if (this.pendingTranscriptions.length > 0) {
       console.log(`🔄 残りの文字起こし ${this.pendingTranscriptions.length} 件を待機中...`);
       await Promise.all(this.pendingTranscriptions);
+    }
+    console.log('🔄 stopRecording: 文字起こし完了');
+
+    if (this.sessionTranscript.length > 0) {
+      try {
+        const transcript = this.sessionTranscript.join('\n');
+        console.log(`🔄 stopRecording: 要約開始 (${this.sessionTranscript.length} 件)`);
+        const summary = await this.summarizer.summarize(transcript);
+
+        if (summary && this.textChannel) {
+          await this.textChannel.send(`📋 **要約:**\n${summary}`);
+        }
+        if (summary && this.currentPageTitle) {
+          await this.scrapbox.appendToPage(this.currentPageTitle, `\n要約\n${summary}`);
+        }
+      } catch (error) {
+        console.error('❌ 要約処理エラー:', error instanceof Error ? error.message : error);
+      }
     }
 
     if (this.textChannel && this.currentPageTitle) {
@@ -254,6 +281,7 @@ export class VoiceHandler {
 
         const entry = this.scrapbox.formatMinutesEntry(userName, text);
         await this.scrapbox.appendToPage(this.currentPageTitle!, entry);
+        this.sessionTranscript.push(entry);
         console.log(`✅ ${userName}: ${text.substring(0, 50)}...`);
 
         if (this.textChannel) {
